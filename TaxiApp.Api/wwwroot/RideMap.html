@@ -1,0 +1,253 @@
+﻿<!DOCTYPE html>
+<html>
+<head>
+    <title>Ride Map</title>
+    <style>
+        html, body {
+            height: 100%;
+            margin: 0;
+            padding: 0;
+            font-family: Arial, sans-serif;
+        }
+
+        #map {
+            height: 100%;
+            width: 100%;
+        }
+
+        .selections {
+            position: absolute;
+            top: 10px;
+            left: 50%;
+            transform: translateX(-50%);
+            background-color: rgba(255, 255, 255, 0.9);
+            padding: 15px;
+            border-radius: 8px;
+            box-shadow: 0 3px 6px rgba(0,0,0,0.2);
+            display: flex;
+            flex-wrap: wrap;
+            gap: 10px;
+            z-index: 10;
+        }
+
+            .selections label {
+                margin-right: 5px;
+                font-weight: bold;
+            }
+
+        select {
+            padding: 5px;
+            border-radius: 5px;
+            border: 1px solid #aaa;
+        }
+
+        .info {
+            position: absolute;
+            bottom: 10px;
+            left: 50%;
+            transform: translateX(-50%);
+            background-color: rgba(255, 255, 255, 0.95);
+            padding: 15px 25px;
+            border-radius: 8px;
+            box-shadow: 0 3px 6px rgba(0,0,0,0.3);
+            display: flex;
+            gap: 20px;
+            align-items: center;
+            z-index: 10;
+        }
+
+            .info p {
+                margin: 0;
+                font-weight: bold;
+            }
+
+                .info p span {
+                    color: #007BFF;
+                    margin-left: 5px;
+                }
+
+        #submitRide {
+            padding: 10px 20px;
+            border: none;
+            border-radius: 6px;
+            background-color: #4CAF50;
+            color: white;
+            font-weight: bold;
+            cursor: pointer;
+        }
+
+            #submitRide:hover {
+                background-color: #45a049;
+            }
+    </style>
+</head>
+<body>
+
+    <div class="selections">
+        <div>
+            <label>Yolcu:</label>
+            <select id="passengerSelect"></select>
+        </div>
+        <div>
+            <label>Sürücü:</label>
+            <select id="driverSelect"></select>
+        </div>
+        <div>
+            <label>Taxi Tipi:</label>
+            <select id="taxiTypeSelect"></select>
+        </div>
+    </div>
+
+    <div id="map"></div>
+
+    <div class="info">
+        <p>Mesafe: <span id="distanceKm">-</span> km</p>
+        <p>Süre: <span id="durationText">-</span></p>
+        <p>Fiyat: <span id="price">-</span> ₺</p>
+        <button id="submitRide">RIDE İSTE</button>
+    </div>
+
+    <script>
+        let map, startMarker = null, endMarker = null;
+        let distanceKm = 0, durationText = "-", price = 0;
+        const defaultCommissionRate = 0.10;
+        let taxiTypes = [];
+
+        async function fetchSelections() {
+            try {
+                const passengers = await fetch("https://localhost:7053/api/users/passengers").then(r => r.json());
+                const drivers = await fetch("https://localhost:7053/api/users/drivers").then(r => r.json());
+                taxiTypes = await fetch("https://localhost:7053/api/taxitypes").then(r => r.json());
+
+                const passengerSelect = document.getElementById("passengerSelect");
+                passengers.forEach(p => {
+                    const opt = document.createElement("option");
+                    opt.value = p.id;
+                    opt.text = p.username;
+                    passengerSelect.appendChild(opt);
+                });
+
+                const driverSelect = document.getElementById("driverSelect");
+                drivers.forEach(d => {
+                    const opt = document.createElement("option");
+                    opt.value = d.id;
+                    opt.text = d.username;
+                    driverSelect.appendChild(opt);
+                });
+
+                const taxiTypeSelect = document.getElementById("taxiTypeSelect");
+                taxiTypes.forEach(t => {
+                    const opt = document.createElement("option");
+                    opt.value = t.id;
+                    opt.text = t.name;
+                    taxiTypeSelect.appendChild(opt);
+                });
+
+                taxiTypeSelect.addEventListener("change", updateRideInfo);
+
+            } catch (err) {
+                console.error("Seçenekler çekilirken hata:", err);
+                alert("API'den veri alınamadı: " + err.message);
+            }
+        }
+
+        function updateRideInfo() {
+            if (!startMarker || !endMarker) return;
+
+            const startLat = startMarker.getPosition().lat();
+            const startLng = startMarker.getPosition().lng();
+            const endLat = endMarker.getPosition().lat();
+            const endLng = endMarker.getPosition().lng();
+
+            const taxiTypeId = parseInt(document.getElementById("taxiTypeSelect").value);
+            const taxiType = taxiTypes.find(t => t.id === taxiTypeId);
+            if (!taxiType) return;
+
+            const service = new google.maps.DistanceMatrixService();
+            service.getDistanceMatrix({
+                origins: [{ lat: startLat, lng: startLng }],
+                destinations: [{ lat: endLat, lng: endLng }],
+                travelMode: 'DRIVING',
+                unitSystem: google.maps.UnitSystem.METRIC
+            }, (response, status) => {
+                if (status === 'OK') {
+                    distanceKm = response.rows[0].elements[0].distance.value / 1000;
+                    durationText = response.rows[0].elements[0].duration.text;
+                    price = ((distanceKm * taxiType.kmPrice) + taxiType.baseFare) * (1 + defaultCommissionRate);
+
+                    document.getElementById("distanceKm").innerText = distanceKm.toFixed(2);
+                    document.getElementById("durationText").innerText = durationText;
+                    document.getElementById("price").innerText = price.toFixed(2);
+                }
+            });
+        }
+
+        function initMap() {
+            map = new google.maps.Map(document.getElementById("map"), {
+                center: { lat: 39.9334, lng: 32.8597 },
+                zoom: 6
+            });
+
+            map.addListener("click", (event) => {
+                if (!startMarker) {
+                    startMarker = new google.maps.Marker({
+                        position: event.latLng,
+                        map: map,
+                        label: "S"
+                    });
+                } else if (!endMarker) {
+                    endMarker = new google.maps.Marker({
+                        position: event.latLng,
+                        map: map,
+                        label: "E"
+                    });
+                } else {
+                    alert("Başlangıç ve Bitiş zaten seçildi.");
+                }
+                updateRideInfo();
+            });
+
+            document.getElementById("submitRide").addEventListener("click", async () => {
+                if (!startMarker || !endMarker) {
+                    alert("Lütfen hem başlangıç hem bitiş noktalarını seçin.");
+                    return;
+                }
+
+                const rideData = {
+                    passengerId: parseInt(document.getElementById("passengerSelect").value),
+                    driverId: parseInt(document.getElementById("driverSelect").value),
+                    taxiTypeId: parseInt(document.getElementById("taxiTypeSelect").value),
+                    startLatitude: startMarker.getPosition().lat(),
+                    startLongitude: startMarker.getPosition().lng(),
+                    endLatitude: endMarker.getPosition().lat(),
+                    endLongitude: endMarker.getPosition().lng(),
+                    distanceKm: distanceKm
+                };
+
+                try {
+                    const response = await fetch("https://localhost:7053/api/rides/request", {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify(rideData)
+                    });
+
+                    if (response.ok) {
+                        alert("Ride talebiniz başarıyla gönderildi!");
+                    } else {
+                        const err = await response.text();
+                        alert("Hata: " + err);
+                    }
+                } catch (e) {
+                    alert("İstek sırasında bir hata oluştu: " + e);
+                }
+            });
+        }
+
+        fetchSelections();
+    </script>
+
+    <script async
+            src="https://maps.googleapis.com/maps/api/js?key=AIzaSyC4XUoavFeoluq9VV_Q3FM8HMZabNzN3Xc&callback=initMap&libraries=places">
+    </script>
+</body>
+</html>
